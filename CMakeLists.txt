@@ -20,3 +20,6 @@ add_custom_target(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROJECT_NAME}.cpp ${sources} ${headers}
 )
 
+add_library(fake-${PROJECT_NAME}-to-collect-includes
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROJECT_NAME}.cpp ${sources} ${headers}
+)

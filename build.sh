@@ -2,6 +2,9 @@
 
 cd $(dirname $0)
 
+set -e
+#set -o xtrace # uncomment for verbose bash
+
 PROJECT_NAME=uno-project
 
 ARDUINO_CORE_PATH=./arduino/std/cores/arduino
@@ -23,8 +26,8 @@ EEP=${BUILD_DIR}/${PROJECT_NAME}.eep
 
 AVR_CORE=${BUILD_DIR}/libArduino.a
 
-AUTODETECT_SOURCES=`find ${SOURCE_DIR} -name "*.c" -or -name "*.cpp" -or -name "*.cc"` $CPP
-AUTODETECT_HEADERS=`find ${SOURCE_DIR} -name "*.h"`
+AUTODETECT_SOURCES="`find ${SOURCE_DIR} -name "*.c" -or -name "*.cpp" -or -name "*.cc"` ${CPP}"
+AUTODETECT_HEADERS="`find ${SOURCE_DIR} -name "*.h"`"
 
 export PATH=${TOOL_DIR}:$PATH
 
@@ -152,17 +155,21 @@ function build_arduino_core_library() {
 }
 
 echo "Building Arduino Core Library.."
-[[ -e ${AVR_CORE} ]] \
-  && echo "Using cached Arduino Core Library.."
+[[ -e ${AVR_CORE} ]]                            \
+  && echo "Using cached Arduino Core Library.." \
   || build_arduino_core_library
 
 echo "Compiling project.."
+AUTODETECT_OBJECTS=""
 for source in ${AUTODETECT_SOURCES};
 do
-  avr-g++ ${CXX_CORE_FLAGS} ${source} -o ${BUILD_DIR}/$(basename ${source}).o
+  OBJ=${BUILD_DIR}/$(basename ${source}).o
+  avr-g++ ${CXX_CORE_FLAGS} ${source} -o ${OBJ}
+  AUTODETECT_OBJECTS="${AUTODETECT_OBJECTS} ${OBJ}"
+done
 
 echo "Linking project.."
-avr-gcc ${LD_FLAGS} -o ${ELF} ${AVR_CORE} -L./build -lm
+avr-gcc ${LD_FLAGS} -o ${ELF} ${AUTODETECT_OBJECTS} ${AVR_CORE} -L./build -lm
 
 echo "Building elf.."
 avr-objcopy -O ihex -j .eeprom --set-section-flags=.eeprom=alloc,load --no-change-warnings --change-section-lma .eeprom=0 ${ELF} ${EEP}
@@ -171,4 +178,6 @@ avr-size -A ${ELF}
 
 echo "Flashing.."
 avrdude -C${ARDUINO_SDK_PATH}/etc/avrdude.conf -q -q -patmega328p -carduino -P${DEVICE} -b115200 -D -Uflash:w:${HEX}:i
+
+echo "..done."
 

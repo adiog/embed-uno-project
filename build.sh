@@ -3,12 +3,16 @@
 cd $(dirname $0)
 
 set -e
-#set -o xtrace # uncomment for verbose bash
+set -o xtrace
 
 PROJECT_NAME=uno-project
+ARDUINO_SDK_PATH=./arduino/sdk
+ARDUINO_STD_PATH=./arduino/std
+ARDUINO_CORE_PATH=${ARDUINO_STD_PATH}/cores/arduino
+ARDUINO_VARIANT_PATH=${ARDUINO_STD_PATH}/variants/standard
 
-ARDUINO_CORE_PATH=./arduino/std/cores/arduino
-ARDUINO_VARIANT_PATH=./arduino/std/variants/standard
+ARDUINO_LIBRARIES="HID SoftwareSerial SPI Wire"
+ARDUINO_HEADER_ONLY_LIBRARIES="EEPROM"
 
 DEFAULT_DEVICE=`ls -1 /dev/ttyACM* | head -1`
 DEVICE=${1:-${DEFAULT_DEVICE}}
@@ -33,6 +37,10 @@ export PATH=${TOOL_DIR}:$PATH
 
 mkdir -p ${BUILD_DIR}
 
+PROJECT_INCLUDES="                                               \
+  -I./${PROJECT_NAME}                                            \
+  -I./src"
+
 ASM_FLAGS="
     -c                                                           \
     -g                                                           \
@@ -45,7 +53,8 @@ ASM_FLAGS="
     -DARDUINO_AVR_UNO                                            \
     -DARDUINO_ARCH_AVR                                           \
     -I${ARDUINO_CORE_PATH}                                       \
-    -I${ARDUINO_VARIANT_PATH}"
+    -I${ARDUINO_VARIANT_PATH}                                    \
+    ${PROJECT_INCLUDES}"
 
 C_CORE_FLAGS="                                                   \
     -c                                                           \
@@ -64,7 +73,8 @@ C_CORE_FLAGS="                                                   \
     -DARDUINO_AVR_UNO                                            \
     -DARDUINO_ARCH_AVR                                           \
     -I${ARDUINO_CORE_PATH}                                       \
-    -I${ARDUINO_VARIANT_PATH}"
+    -I${ARDUINO_VARIANT_PATH}                                    \
+    ${PROJECT_INCLUDES}"
 
 CXX_CORE_FLAGS="                                                 \
     -c                                                           \
@@ -85,7 +95,8 @@ CXX_CORE_FLAGS="                                                 \
     -DARDUINO_AVR_UNO                                            \
     -DARDUINO_ARCH_AVR                                           \
     -I${ARDUINO_CORE_PATH}                                       \
-    -I${ARDUINO_VARIANT_PATH}"
+    -I${ARDUINO_VARIANT_PATH}                                    \
+    ${PROJECT_INCLUDES}"
 
 LD_FLAGS="                                                       \
     -w                                                           \
@@ -94,7 +105,26 @@ LD_FLAGS="                                                       \
     -flto                                                        \
     -fuse-linker-plugin                                          \
     -Wl,--gc-sections                                            \
-    -mmcu=atmega328p"
+    -mmcu=atmega328p                                             \
+    -L${BUILD_DIR}"
+
+LD_FLAGS_SUFFIX="-lm"
+
+function build_arduino_library() {
+  LIBRARY=$1
+  LIBRARY_SOURCE_DIR=${ARDUINO_STD_PATH}/libraries/${LIBRARY}/src
+  AUTODETECT_LIBRARY_SOURCES="`find ${LIBRARY_SOURCE_DIR} -name "*.c" -or -name "*.cpp" -or -name "*.cc"`"
+  for source in ${AUTODETECT_LIBRARY_SOURCES};
+  do
+    OBJ=${BUILD_DIR}/$(basename ${source}).o
+    if [[ ${source} =~ .c ]]; then
+      avr-gcc ${C_CORE_FLAGS} -I${LIBRARY_SOURCE_DIR} ${source} -o ${OBJ}
+    else
+      avr-g++ ${CXX_CORE_FLAGS} -I${LIBRARY_SOURCE_DIR} ${source} -o ${OBJ}
+    fi
+    avr-gcc-ar rcs ${BUILD_DIR}/lib${LIBRARY}.a ${OBJ}
+  done
+}
 
 function build_arduino_core_library() {
   mkdir -p ${BUILD_DIR}/core
@@ -152,6 +182,10 @@ function build_arduino_core_library() {
   avr-gcc-ar rcs ${AVR_CORE} ${BUILD_DIR}/core/abi.cpp.o
   avr-gcc-ar rcs ${AVR_CORE} ${BUILD_DIR}/core/main.cpp.o
   avr-gcc-ar rcs ${AVR_CORE} ${BUILD_DIR}/core/new.cpp.o
+
+  for library in ${ARDUINO_LIBRARIES}; do
+    build_arduino_library ${library}
+  done
 }
 
 echo "Building Arduino Core Library.."
@@ -159,17 +193,30 @@ echo "Building Arduino Core Library.."
   && echo "Using cached Arduino Core Library.." \
   || build_arduino_core_library
 
+echo "Detecting libraries.."
+AUTODETECT_LIBRARIES=""
+for library in ${ARDUINO_LIBRARIES} ${ARDUINO_HEADER_ONLY_LIBRARIES}; do
+  cat ${AUTODETECT_SOURCES} ${AUTODETECT_HEADERS} \
+    | egrep -q "#include .${library}.h." \
+    && AUTODETECT_LIBRARIES="-l${library} ${AUTODETECT_LIBRARIES}" \
+    && AUTODETECT_INCLUDES="-I${ARDUINO_STD_PATH}/libraries/${library}/src ${AUTODETECT_INCLUDES}"
+done
+
 echo "Compiling project.."
 AUTODETECT_OBJECTS=""
 for source in ${AUTODETECT_SOURCES};
 do
   OBJ=${BUILD_DIR}/$(basename ${source}).o
-  avr-g++ ${CXX_CORE_FLAGS} ${source} -o ${OBJ}
-  AUTODETECT_OBJECTS="${AUTODETECT_OBJECTS} ${OBJ}"
+  if [[ ${source} =~ *.c ]]; then
+    avr-gcc ${C_CORE_FLAGS} ${AUTODETECT_INCLUDES} ${source} -o ${OBJ}
+  else
+    avr-g++ ${CXX_CORE_FLAGS} ${AUTODETECT_INCLUDES} ${source} -o ${OBJ}
+  fi
+  AUTODETECT_OBJECTS="${OBJ} ${AUTODETECT_OBJECTS}"
 done
 
 echo "Linking project.."
-avr-gcc ${LD_FLAGS} -o ${ELF} ${AUTODETECT_OBJECTS} ${AVR_CORE} -L./build -lm
+avr-gcc ${LD_FLAGS} ${AUTODETECT_INCLUDES} -o ${ELF} ${AUTODETECT_OBJECTS} ${AVR_CORE} ${AUTODETECT_LIBRARIES} ${LD_FLAGS_SUFFIX}
 
 echo "Building elf.."
 avr-objcopy -O ihex -j .eeprom --set-section-flags=.eeprom=alloc,load --no-change-warnings --change-section-lma .eeprom=0 ${ELF} ${EEP}
